@@ -13,8 +13,8 @@ References:
   http://atxconsulting.com/content/linode-api-bindings
   https://github.com/tjfontaine/linode-python/
 """
+import json
 import re
-from linode import Api
 import requests
 
 APIKEY = 'sekret'
@@ -24,34 +24,55 @@ CHECKIP = "http://checkip.dyndns.org:8245/"
 
 def get_external_ip():
     """ Return the current external IP. """
-    print "Fetching external IP from: %s" % CHECKIP
     request = requests.get(CHECKIP)
     external_ip = re.findall('[0-9.]+', request.text)[0]
+    #print("Fetching external IP from: %s. Result = %s" % (CHECKIP, external_ip))
     return external_ip
 
-def set_dns_target(utarget, udomain=DOMAIN, urecord=RECORD):
-    """ Update the domain's DNS record with the specified target. """
-    api = Api(APIKEY)
-    for domain in api.domain.list():
-        if domain['DOMAIN'] == udomain:
-            # Check the DNS Entry already exists
-            for record in api.domain.resource.list(domainid=domain['DOMAINID']):
-                if record['NAME'] == RECORD:
-                    if record['TARGET'] == utarget:
-                        # DNS Entry Already at the correct value
-                        print "Entry '%s:%s' already set to '%s'." % (udomain, urecord, utarget)
-                        return record['RESOURCEID']
-                    else:
-                        # DNS Entry found; Update it
-                        print "Updating entry '%s:%s' target to '%s'." % (udomain, urecord, utarget)
-                        return api.domain.resource.update(domainid=domain['DOMAINID'],
-                            resourceid=record['RESOURCEID'], target=utarget)
-            # DNS Entry not found; Create it
-            print "Creating entry '%s:%s' target as '%s'." % (udomain, urecord, utarget)
-            return api.domain.resource.create(domainid=domain['DOMAINID'],
-                name=urecord, type='A', target=utarget, ttl_sec=3600)
-            print "Error: Domain %s not found." % udomain
 
 if __name__ == '__main__':
-    set_dns_target(get_external_ip(), DOMAIN, RECORD)
-    print "Done."
+    external_ip = get_external_ip()
+    headers = {'Authorization': f'Bearer {APIKEY}'}
+
+    response = requests.get(
+        url=f'https://api.linode.com/v4/domains',
+        headers=headers
+    )
+
+    domainId = None
+    for domain in response.json()['data']:
+        if domain['domain'] == DOMAIN:
+            domainId = domain['id']
+            break
+
+    assert domainId is not None
+
+    response = requests.get(
+        url=f'https://api.linode.com/v4/domains/{domainId}/records',
+        headers = headers
+    )
+
+    recordId = None
+    must_change = False
+
+    for record in response.json()['data']:
+        if record['name'] == RECORD:
+            if record['target'] != external_ip:
+                must_change = True
+
+            recordId = record['id']
+            break
+
+    assert recordId is not None
+
+    if must_change:
+        response = requests.put(
+            url=f'https://api.linode.com/v4/domains/{domainId}/records/{recordId}',
+            headers=dict({'Content-Type': 'application/json'}, **headers),
+            data=json.dumps({
+                'target': external_ip,
+                'ttl_sec': 300,
+            })
+        )
+
+        assert response.status_code == 200
